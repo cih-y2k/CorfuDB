@@ -229,8 +229,7 @@ public class RemoteMonitoringService implements MonitoringService {
             return;
         }
 
-        healingDetectorFuture = detectionTaskWorkers.submit(() -> {
-
+        Runnable healingDetectorTask = () -> {
             CorfuRuntime corfuRuntime = getCorfuRuntime();
             final Layout layout = serverContext.copyManagementLayout();
             final PollReport pollReport = healingDetector.poll(layout, corfuRuntime);
@@ -261,7 +260,9 @@ public class RemoteMonitoringService implements MonitoringService {
                 log.error("Healing nodes interrupted: ", ie);
                 Thread.currentThread().interrupt();
             }
-        });
+        };
+
+        healingDetectorFuture = CompletableFuture.runAsync(healingDetectorTask, detectionTaskWorkers);
     }
 
     /**
@@ -286,12 +287,11 @@ public class RemoteMonitoringService implements MonitoringService {
             return;
         }
 
-        failureDetectorFuture = detectionTaskWorkers.submit(() -> {
-
+        Runnable failureDetectorTask = () -> {
             CorfuRuntime corfuRuntime = getCorfuRuntime();
-            final Layout layout = serverContext.copyManagementLayout();
+            Layout layout = serverContext.copyManagementLayout();
             // Execute the failure detection poll round.
-            final PollReport pollReport = failureDetector.poll(layout, corfuRuntime);
+            PollReport pollReport = failureDetector.poll(layout, corfuRuntime);
 
             clusterStateContext.updateUnresponsiveNodes(pollReport.getChangedNodes());
             pollReport.getClusterStateMap().forEach((s, clusterStatus) ->
@@ -305,7 +305,9 @@ public class RemoteMonitoringService implements MonitoringService {
             // Analyze the poll report and trigger failure handler if needed.
             handleFailures(pollReport);
 
-        });
+        };
+
+        failureDetectorFuture = CompletableFuture.runAsync(failureDetectorTask, detectionTaskWorkers);
     }
 
     /**
@@ -510,8 +512,7 @@ public class RemoteMonitoringService implements MonitoringService {
      *
      * @param layoutCompletableFutureMap Map of layout server endpoints to their layout requests.
      */
-    private void updateTrailingLayoutServers(
-            Map<String, CompletableFuture<Layout>> layoutCompletableFutureMap) {
+    private void updateTrailingLayoutServers(Map<String, CompletableFuture<Layout>> layoutCompletableFutureMap) {
 
         // Patch trailing layout servers with latestLayout.
         Layout latestLayout = serverContext.copyManagementLayout();

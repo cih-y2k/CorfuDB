@@ -8,6 +8,7 @@ import static org.corfudb.universe.scenario.fixture.Fixtures.TestFixtureConst.DE
 
 import org.corfudb.runtime.collections.CorfuTable;
 import org.corfudb.runtime.view.ClusterStatusReport;
+import org.corfudb.runtime.view.Layout;
 import org.corfudb.universe.GenericIntegrationTest;
 import org.corfudb.universe.group.cluster.CorfuCluster;
 import org.corfudb.universe.node.client.CorfuClient;
@@ -20,6 +21,49 @@ import java.util.Arrays;
 
 public class NodeUpAndPartitionedIT extends GenericIntegrationTest {
 
+    @Test
+    public void testFailureDetector() {
+        final int times = 30;
+
+        for (int i = 0; i < times; i++) {
+            getScenario().describe((fixture, testCase) -> {
+                CorfuCluster corfuCluster = universe.getGroup(fixture.getCorfuCluster().getName());
+
+                CorfuClient corfuClient = corfuCluster.getLocalCorfuClient();
+
+                CorfuTable<String, String> table = corfuClient.createDefaultCorfuTable(DEFAULT_STREAM_NAME);
+                for (int j = 0; j < DEFAULT_TABLE_ITER; j++) {
+                    table.put(String.valueOf(j), String.valueOf(j));
+                }
+
+                testCase.it("Should fail the node with most link failures to unresponsive set", data -> {
+                    // Deploy and bootstrap three nodes
+                    CorfuServer server1 = corfuCluster.getServerByIndex(1);
+
+                    Layout layoutBeforeStop = corfuClient.getLayout();
+
+                    // Stop server1
+                    server1.stop(Duration.ofSeconds(10));
+                    waitForUnresponsiveServersChange(size -> size == 1, corfuClient);
+
+                    Layout layoutAfterStop = corfuClient.getLayout();
+
+                    String errorMessage = String.format(
+                            "Layout before stop: %s, layout after stop: %s",
+                            layoutBeforeStop.asJSONString(), layoutAfterStop.asJSONString()
+                    );
+
+                    assertThat(layoutAfterStop.getUnresponsiveServers())
+                            .as(errorMessage)
+                            .containsExactly(server1.getEndpoint());
+                });
+            });
+
+            tearDown();
+        }
+    }
+
+
     /**
      * Test cluster behavior after an unresponsive node becomes available (up) and at the same
      * time a previously responsive node starts to have two link failures. One of which to a
@@ -29,13 +73,13 @@ public class NodeUpAndPartitionedIT extends GenericIntegrationTest {
      * unresponsive set (potentially healed) will be taken out. In other word, it makes sure that
      * we don't remove a responsive node in a way that eliminates the possibility of future healing
      * of unresponsive nodes.
-     *
+     * <p>
      * Steps taken in the test:
      * 1) Deploy and bootstrap a three nodes cluster
      * 2) Stop one node
      * 3) Create two link failures between a responsive node with smaller endpoint name and the
      * rest of the cluster AND restart the unresponsive node.
-
+     * <p>
      * 4) Verify that responsive node mentioned in step 3 becomes unresponsive
      * 5) Verify that the restarted unresponsive node in step 3 gets healed
      * 6) Verify cluster status and data path
@@ -73,8 +117,8 @@ public class NodeUpAndPartitionedIT extends GenericIntegrationTest {
                 server0.disconnect(Arrays.asList(server1, server2));
                 server1.start();
                 waitForLayoutChange(layout -> layout.getUnresponsiveServers()
-                                                    .contains(server0.getEndpoint()),
-                                    corfuClient);
+                                .contains(server0.getEndpoint()),
+                        corfuClient);
 
                 // Verify server0 is unresponsive
                 assertThat(corfuClient.getLayout().getUnresponsiveServers())
