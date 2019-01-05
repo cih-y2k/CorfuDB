@@ -44,14 +44,21 @@ import javax.net.ssl.SSLException;
 import lombok.extern.slf4j.Slf4j;
 
 import org.apache.commons.io.FileUtils;
+import org.corfudb.infrastructure.management.ClusterStateContext;
+import org.corfudb.infrastructure.management.FailureDetector;
+import org.corfudb.infrastructure.management.HealingDetector;
 import org.corfudb.protocols.wireprotocol.NettyCorfuMessageDecoder;
 import org.corfudb.protocols.wireprotocol.NettyCorfuMessageEncoder;
+import org.corfudb.runtime.CorfuRuntime;
+import org.corfudb.runtime.exceptions.UnreachableClusterException;
 import org.corfudb.runtime.exceptions.unrecoverable.UnrecoverableCorfuError;
 import org.corfudb.runtime.exceptions.unrecoverable.UnrecoverableCorfuInterruptedError;
+import org.corfudb.runtime.view.Layout;
 import org.corfudb.security.sasl.plaintext.PlainTextSaslNettyServer;
 import org.corfudb.security.tls.SslContextConstructor;
 import org.corfudb.util.GitRepositoryState;
 import org.corfudb.util.Version;
+import org.corfudb.util.concurrent.SingletonResource;
 import org.docopt.Docopt;
 import org.fusesource.jansi.AnsiConsole;
 import org.slf4j.LoggerFactory;
@@ -287,12 +294,19 @@ public class CorfuServer {
 
         // Create a common Server Context for all servers to access.
         try (ServerContext serverContext = new ServerContext(opts)) {
+            ClusterStateContext clusterStateContext = new ClusterStateContext();
+            SingletonResource<CorfuRuntime> corfuRuntime = SingletonResource.withInitial(() -> getNewCorfuRuntime(serverContext));
+
+            RemoteMonitoringService rms = new RemoteMonitoringService(serverContext,
+                    corfuRuntime, clusterStateContext, new FailureDetector(), new HealingDetector()
+            );
+
             List<AbstractServer> servers = ImmutableList.<AbstractServer>builder()
                     .add(new BaseServer(serverContext))
                     .add(new SequencerServer(serverContext))
                     .add(new LayoutServer(serverContext))
                     .add(new LogUnitServer(serverContext))
-                    .add(new ManagementServer(serverContext))
+                    .add(new ManagementServer(serverContext, rms, corfuRuntime))
                     .build();
 
             NettyServerRouter router = new NettyServerRouter(servers);
@@ -300,7 +314,7 @@ public class CorfuServer {
             serverContext.setBindToAllInterfaces(bindToAllInterfaces);
 
             // Register shutdown handler
-            shutdownThread = new Thread(() -> cleanShutdown(servers));
+            shutdownThread = new Thread(() -> cleanShutdown(servers, rms));
             shutdownThread.setName("ShutdownThread");
             Runtime.getRuntime().addShutdownHook(shutdownThread);
 
@@ -315,6 +329,48 @@ public class CorfuServer {
             log.error("CorfuServer: Server exiting due to unrecoverable error: ", e);
             System.exit(EXIT_ERROR_CODE);
         }
+    }
+
+    /**
+     * The number of tries to be made to execute any RPC request before the runtime gives up and
+     * invokes the systemDownHandler.
+     * This is set to 60  based on the fact that the sleep duration between RPC retries is
+     * defaulted to 1 second in the Runtime parameters. This gives the Runtime a total of 1 minute
+     * to make progress. Else the ongoing task is aborted.
+     */
+    private static final int SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT = 60;
+
+    /**
+     * System down handler to break out of live-locks if the runtime cannot reach the cluster for a
+     * certain amount of time. This handler can be invoked at anytime if the Runtime is stuck and
+     * cannot make progress on an RPC call after trying for more than
+     * SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT number of retries.
+     */
+    private static final Runnable runtimeSystemDownHandler = () -> {
+        log.warn("ManagementServer: Runtime stalled. Invoking systemDownHandler after {} "
+                + "unsuccessful tries.", SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT);
+        throw new UnreachableClusterException("Runtime stalled. Invoking systemDownHandler after "
+                + SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT + " unsuccessful tries.");
+    };
+
+    /**
+     * Returns a connected instance of the CorfuRuntime.
+     *
+     * @return A connected instance of runtime.
+     */
+    public static CorfuRuntime getNewCorfuRuntime(ServerContext serverContext) {
+        CorfuRuntime.CorfuRuntimeParameters params = serverContext.getDefaultRuntimeParameters();
+        params.setSystemDownHandlerTriggerLimit(SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT);
+        final CorfuRuntime runtime = CorfuRuntime.fromParameters(params);
+        final Layout managementLayout = serverContext.copyManagementLayout();
+        // Runtime can be set up either using the layout or the bootstrapEndpoint address.
+        if (managementLayout != null) {
+            managementLayout.getLayoutServers().forEach(runtime::addLayoutServer);
+        }
+        runtime.connect();
+        log.info("getCorfuRuntime: Corfu Runtime connected successfully");
+        params.setSystemDownHandler(runtimeSystemDownHandler);
+        return runtime;
     }
 
     /** A functional interface for receiving and configuring a {@link ServerBootstrap}.
@@ -502,8 +558,15 @@ public class CorfuServer {
         final Map<String, Object> opts = serverContext.getServerConfig();
         final boolean bindToAllInterfaces = serverContext.isBindToAllInterfaces();
 
+        ClusterStateContext clusterStateContext = new ClusterStateContext();
+        SingletonResource<CorfuRuntime> corfuRuntime = SingletonResource.withInitial(() -> getNewCorfuRuntime(serverContext));
+
+        RemoteMonitoringService rms = new RemoteMonitoringService(serverContext,
+                corfuRuntime, clusterStateContext, new FailureDetector(), new HealingDetector()
+        );
+
         corfuServerThread = new Thread(() -> {
-            cleanShutdown(serverContext.getServers());
+            cleanShutdown(serverContext.getServers(), rms);
             if (resetData && !(Boolean) serverContext.getServerConfig().get("--memory")) {
                 File serviceDir = new File((String) serverContext.getServerConfig()
                         .get("--log-path"));
@@ -537,13 +600,14 @@ public class CorfuServer {
     /**
      * Attempt to cleanly shutdown all the servers.
      */
-    public static void cleanShutdown(@Nonnull List<AbstractServer> servers) {
+    public static void cleanShutdown(@Nonnull List<AbstractServer> servers, RemoteMonitoringService rms) {
         log.info("CleanShutdown: Starting Cleanup.");
+
+        rms.shutdown();
 
         // A executor service to create the shutdown threads
         // plus name the threads correctly.
-        final ExecutorService shutdownService =
-                Executors.newFixedThreadPool(servers.size());
+        ExecutorService shutdownService = Executors.newFixedThreadPool(servers.size());
 
         // Turn into a list of futures on the shutdown, returning
         // generating a log message to inform of the result.

@@ -85,6 +85,7 @@ public class RemoteMonitoringService implements MonitoringService {
      * Cluster state context to update the connectivity graph populated by the failure and healing
      * detectors.
      */
+    @Getter
     private final ClusterStateContext clusterStateContext;
 
     /**
@@ -116,7 +117,7 @@ public class RemoteMonitoringService implements MonitoringService {
 
     private SequencerNotReadyCounter sequencerNotReadyCounter;
 
-    RemoteMonitoringService(@NonNull ServerContext serverContext,
+    public RemoteMonitoringService(@NonNull ServerContext serverContext,
                             @NonNull SingletonResource<CorfuRuntime> runtimeSingletonResource,
                             @NonNull ClusterStateContext clusterStateContext,
                             @NonNull IDetector failureDetector,

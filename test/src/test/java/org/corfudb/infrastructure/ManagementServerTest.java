@@ -1,9 +1,14 @@
 package org.corfudb.infrastructure;
 
+import org.corfudb.infrastructure.management.ClusterStateContext;
+import org.corfudb.infrastructure.management.FailureDetector;
+import org.corfudb.infrastructure.management.HealingDetector;
 import org.corfudb.protocols.wireprotocol.CorfuMsgType;
 import org.corfudb.protocols.wireprotocol.DetectorMsg;
 import org.corfudb.protocols.wireprotocol.LayoutBootstrapRequest;
+import org.corfudb.runtime.CorfuRuntime;
 import org.corfudb.runtime.view.Layout;
+import org.corfudb.util.concurrent.SingletonResource;
 import org.junit.After;
 import org.junit.Test;
 
@@ -29,6 +34,16 @@ public class ManagementServerTest extends AbstractServerTest {
                 .setPort(SERVERS.PORT_0)
                 .setServerRouter(getRouter())
                 .build();
+
+        ClusterStateContext clusterStateContext = new ClusterStateContext();
+        SingletonResource<CorfuRuntime> corfuRuntime = SingletonResource.withInitial(() ->
+                CorfuServer.getNewCorfuRuntime(serverContext)
+        );
+
+        RemoteMonitoringService rms = new RemoteMonitoringService(serverContext,
+                corfuRuntime, clusterStateContext, new FailureDetector(), new HealingDetector()
+        );
+
         // Required for management server to fetch layout.
         router.addServer(new LayoutServer(serverContext));
         router.addServer(new BaseServer(serverContext));
@@ -36,7 +51,7 @@ public class ManagementServerTest extends AbstractServerTest {
         router.addServer(new LogUnitServer(serverContext));
         // Required for management server to bootstrap during initialization.
         router.addServer(new SequencerServer(serverContext));
-        managementServer = new ManagementServer(serverContext);
+        managementServer = new ManagementServer(serverContext, rms, corfuRuntime);
         return managementServer;
     }
 

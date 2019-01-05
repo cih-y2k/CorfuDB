@@ -46,52 +46,28 @@ public class ManagementServer extends AbstractServer {
     /**
      * A {@link SingletonResource} which provides a {@link CorfuRuntime}.
      */
-    private final SingletonResource<CorfuRuntime> corfuRuntime =
-            SingletonResource.withInitial(this::getNewCorfuRuntime);
+    private final SingletonResource<CorfuRuntime> corfuRuntime;
     /**
      * Policy to be used to handle failures/healing.
      */
     private IReconfigurationHandlerPolicy failureHandlerPolicy;
     private IReconfigurationHandlerPolicy healingPolicy;
 
-    private final ClusterStateContext clusterStateContext = new ClusterStateContext();
-
     @Getter
     private final ManagementAgent managementAgent;
 
     @Getter
     private final String localEndpoint;
+    private final ClusterStateContext clusterStateContext;
 
     private Orchestrator orchestrator;
-
-    /**
-     * System down handler to break out of live-locks if the runtime cannot reach the cluster for a
-     * certain amount of time. This handler can be invoked at anytime if the Runtime is stuck and
-     * cannot make progress on an RPC call after trying for more than
-     * SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT number of retries.
-     */
-    private final Runnable runtimeSystemDownHandler = () -> {
-        log.warn("ManagementServer: Runtime stalled. Invoking systemDownHandler after {} "
-                + "unsuccessful tries.", SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT);
-        throw new UnreachableClusterException("Runtime stalled. Invoking systemDownHandler after "
-                + SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT + " unsuccessful tries.");
-    };
-
-    /**
-     * The number of tries to be made to execute any RPC request before the runtime gives up and
-     * invokes the systemDownHandler.
-     * This is set to 60  based on the fact that the sleep duration between RPC retries is
-     * defaulted to 1 second in the Runtime parameters. This gives the Runtime a total of 1 minute
-     * to make progress. Else the ongoing task is aborted.
-     */
-    private static final int SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT = 60;
 
     /**
      * Returns new ManagementServer.
      *
      * @param serverContext context object providing parameters and objects
      */
-    public ManagementServer(ServerContext serverContext) {
+    public ManagementServer(ServerContext serverContext, RemoteMonitoringService rms, SingletonResource<CorfuRuntime> corfuRuntime) {
 
         this.opts = serverContext.getServerConfig();
         this.localEndpoint = this.opts.get("--address") + ":" + this.opts.get("<port>");
@@ -101,30 +77,11 @@ public class ManagementServer extends AbstractServer {
         this.healingPolicy = serverContext.getHealingHandlerPolicy();
 
         // Creating a management agent.
-        this.managementAgent = new ManagementAgent(corfuRuntime, serverContext, clusterStateContext);
+        this.corfuRuntime = corfuRuntime;
+        this.managementAgent = new ManagementAgent(corfuRuntime, serverContext, rms);
+        this.clusterStateContext = rms.getClusterStateContext();
         // Creating an orchestrator.
         this.orchestrator = new Orchestrator(corfuRuntime, serverContext);
-    }
-
-    /**
-     * Returns a connected instance of the CorfuRuntime.
-     *
-     * @return A connected instance of runtime.
-     */
-    private CorfuRuntime getNewCorfuRuntime() {
-        final CorfuRuntime.CorfuRuntimeParameters params =
-                serverContext.getDefaultRuntimeParameters();
-        params.setSystemDownHandlerTriggerLimit(SYSTEM_DOWN_HANDLER_TRIGGER_LIMIT);
-        final CorfuRuntime runtime = CorfuRuntime.fromParameters(params);
-        final Layout managementLayout = serverContext.copyManagementLayout();
-        // Runtime can be set up either using the layout or the bootstrapEndpoint address.
-        if (managementLayout != null) {
-            managementLayout.getLayoutServers().forEach(runtime::addLayoutServer);
-        }
-        runtime.connect();
-        log.info("getCorfuRuntime: Corfu Runtime connected successfully");
-        params.setSystemDownHandler(runtimeSystemDownHandler);
-        return runtime;
     }
 
     /**

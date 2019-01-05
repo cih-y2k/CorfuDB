@@ -4,15 +4,22 @@ import com.google.common.collect.ImmutableSet;
 
 import org.corfudb.infrastructure.AbstractServer;
 import org.corfudb.infrastructure.BaseServer;
+import org.corfudb.infrastructure.CorfuServer;
 import org.corfudb.infrastructure.LayoutServer;
 import org.corfudb.infrastructure.LogUnitServer;
 import org.corfudb.infrastructure.ManagementServer;
+import org.corfudb.infrastructure.RemoteMonitoringService;
 import org.corfudb.infrastructure.SequencerServer;
 import org.corfudb.infrastructure.ServerContext;
 import org.corfudb.infrastructure.ServerContextBuilder;
 import org.corfudb.infrastructure.TestLayoutBuilder;
+import org.corfudb.infrastructure.management.ClusterStateContext;
+import org.corfudb.infrastructure.management.FailureDetector;
+import org.corfudb.infrastructure.management.HealingDetector;
 import org.corfudb.protocols.wireprotocol.ClusterState;
 import org.corfudb.protocols.wireprotocol.orchestrator.QueryResponse;
+import org.corfudb.runtime.CorfuRuntime;
+import org.corfudb.util.concurrent.SingletonResource;
 import org.junit.After;
 import org.junit.Test;
 
@@ -43,7 +50,17 @@ public class ManagementHandlerTest extends AbstractClientTest {
                 .setServerRouter(serverRouter)
                 .setPort(SERVERS.PORT_0)
                 .build();
-        server = new ManagementServer(serverContext);
+
+        ClusterStateContext clusterStateContext = new ClusterStateContext();
+        SingletonResource<CorfuRuntime> corfuRuntime = SingletonResource.withInitial(() ->
+                CorfuServer.getNewCorfuRuntime(serverContext)
+        );
+
+        RemoteMonitoringService rms = new RemoteMonitoringService(serverContext,
+                corfuRuntime, clusterStateContext, new FailureDetector(), new HealingDetector()
+        );
+
+        server = new ManagementServer(serverContext, rms, corfuRuntime);
         return new ImmutableSet.Builder<AbstractServer>()
                 .add(server)
                 // Required for management server to fetch the latest layout and connect runtime.

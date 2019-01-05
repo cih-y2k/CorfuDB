@@ -12,14 +12,19 @@ import lombok.Data;
 import lombok.Getter;
 import org.corfudb.AbstractCorfuTest;
 import org.corfudb.infrastructure.BaseServer;
+import org.corfudb.infrastructure.CorfuServer;
 import org.corfudb.infrastructure.IServerRouter;
 import org.corfudb.infrastructure.LayoutServer;
 import org.corfudb.infrastructure.LogUnitServer;
 import org.corfudb.infrastructure.ManagementServer;
+import org.corfudb.infrastructure.RemoteMonitoringService;
 import org.corfudb.infrastructure.SequencerServer;
 import org.corfudb.infrastructure.ServerContext;
 import org.corfudb.infrastructure.ServerContextBuilder;
 import org.corfudb.infrastructure.TestServerRouter;
+import org.corfudb.infrastructure.management.ClusterStateContext;
+import org.corfudb.infrastructure.management.FailureDetector;
+import org.corfudb.infrastructure.management.HealingDetector;
 import org.corfudb.protocols.wireprotocol.CorfuMsgType;
 import org.corfudb.protocols.wireprotocol.LayoutBootstrapRequest;
 import org.corfudb.protocols.wireprotocol.SequencerTailsRecoveryMsg;
@@ -34,6 +39,7 @@ import org.corfudb.runtime.clients.SequencerHandler;
 import org.corfudb.runtime.clients.TestClientRouter;
 import org.corfudb.runtime.clients.TestRule;
 import org.corfudb.util.NodeLocator;
+import org.corfudb.util.concurrent.SingletonResource;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -467,6 +473,15 @@ public abstract class AbstractViewTest extends AbstractCorfuTest {
         }
 
         TestServer(ServerContext serverContext) {
+            ClusterStateContext clusterStateContext = new ClusterStateContext();
+            SingletonResource<CorfuRuntime> corfuRuntime = SingletonResource.withInitial(() ->
+                    CorfuServer.getNewCorfuRuntime(serverContext)
+            );
+
+            RemoteMonitoringService rms = new RemoteMonitoringService(serverContext,
+                    corfuRuntime, clusterStateContext, new FailureDetector(), new HealingDetector()
+            );
+
             this.serverContext = serverContext;
             this.serverRouter = serverContext.getServerRouter();
             if (serverRouter == null) {
@@ -476,7 +491,7 @@ public abstract class AbstractViewTest extends AbstractCorfuTest {
             this.sequencerServer = new SequencerServer(serverContext);
             this.layoutServer = new LayoutServer(serverContext);
             this.logUnitServer = new LogUnitServer(serverContext);
-            this.managementServer = new ManagementServer(serverContext);
+            this.managementServer = new ManagementServer(serverContext, rms, corfuRuntime);
 
             this.serverRouter.addServer(baseServer);
             this.serverRouter.addServer(sequencerServer);

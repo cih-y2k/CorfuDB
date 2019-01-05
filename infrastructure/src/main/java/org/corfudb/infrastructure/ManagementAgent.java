@@ -83,7 +83,7 @@ public class ManagementAgent {
      */
     ManagementAgent(@NonNull SingletonResource<CorfuRuntime> runtimeSingletonResource,
                     @NonNull ServerContext serverContext,
-                    @NonNull ClusterStateContext clusterStateContext) {
+                    @NonNull RemoteMonitoringService remoteMonitoringService) {
         this.runtimeSingletonResource = runtimeSingletonResource;
         this.serverContext = serverContext;
 
@@ -108,10 +108,10 @@ public class ManagementAgent {
             log.info("Attempting to recover. Layout before shutdown: {}", managementLayout);
         }
 
-        this.localMonitoringService = new LocalMonitoringService(serverContext,
-                runtimeSingletonResource, clusterStateContext);
-        this.remoteMonitoringService = new RemoteMonitoringService(serverContext,
-                runtimeSingletonResource, clusterStateContext, new FailureDetector(), new HealingDetector());
+        this.localMonitoringService = new LocalMonitoringService(
+                serverContext, runtimeSingletonResource, remoteMonitoringService.getClusterStateContext()
+        );
+        this.remoteMonitoringService = remoteMonitoringService;
 
         // Creating the initialization task thread.
         // This thread pool is utilized to dispatch one time recovery and sequencer bootstrap tasks.
