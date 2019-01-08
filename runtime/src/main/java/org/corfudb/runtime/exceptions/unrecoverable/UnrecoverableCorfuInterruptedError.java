@@ -14,6 +14,8 @@ public class UnrecoverableCorfuInterruptedError extends UnrecoverableCorfuError 
      */
     public UnrecoverableCorfuInterruptedError(@Nonnull InterruptedException cause) {
         super(cause);
+        // Restore the interrupted status.
+        Thread.currentThread().interrupt();
     }
 
     /** Construct a new {@link UnrecoverableCorfuInterruptedError} with a given message
@@ -25,5 +27,7 @@ public class UnrecoverableCorfuInterruptedError extends UnrecoverableCorfuError 
     public UnrecoverableCorfuInterruptedError( @Nonnull String message,
                                                @Nonnull InterruptedException cause) {
         super(message, cause);
+        // Restore the interrupted status.
+        Thread.currentThread().interrupt();
     }
 }
